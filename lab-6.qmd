@@ -1,0 +1,520 @@
+---
+title: "Lab #6: ANOVA, Correlation and Regression"
+
+editor: source
+
+execute:
+  warning: false
+  code-fold: TRUE
+
+format: 
+  html: 
+    toc: true
+    df-print: paged
+    embed-resources: true
+---
+
+```{r}
+#| code-fold: TRUE
+
+# load required libraries
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(emmeans)
+library(PMCMRplus)
+
+```
+
+## One-Way ANOVA
+
+Analysis of variance (ANOVA) is an extension of the two-sample t test (equal variance) to k\>2 groups.
+
+$\text{H}_0: \mu_1 = \mu_2 = \dots = \mu_k$\
+$\text{H}_\text{A}: \text{At least two population means are different}$
+
+Assumptions:
+
+1.  Samples from the k populations are independent.
+2.  Samples from the k populations are normally distributed or sample size is large enough for the CLT to apply.
+3.  Variance in the k populations are equal.
+    i)  Rule of Thumb- if the largest sample standard deviation is not more than twice the smallest, okay to proceed with ANOVA
+
+The Kruskal-Wallis test is the non-parametric analogue of one-way ANOVA.
+
+$\text{H}_0: \text{Median}_1 = \text{Median}_2 = \dots = \text{Median}_k$\
+$\text{H}_\text{A}: \text{At least two population medians are different}$
+
+### ANOVA example
+
+Recall the breast feeding example from lecture (data included in breast_feeding.xlsx):
+
+In 1992, the WHO studied the energy intake in kilocalories per day (kcal/day) in infants breast fed (exclusively) for 4, 5 or 6 months and had other foods introduced into their diet after the breast feeding period. Is there a difference in energy intake between the 3 groups?
+
+Variables include:
+
+-   obs = ID \#
+-   bfed = breast feeding group (BF4 = 4 months, BF5 = 5 months and BF6 = 6 months)
+-   energy = energy intake (kcal/day)
+
+```{r}
+#| code-fold: TRUE
+
+bf <- read_xlsx("breast_feeding-1.xlsx")
+head(bf)
+
+```
+
+Start by getting summary statistics by group and plotting the data to evaluate the ANOVA assumptions.
+
+```{r}
+#| code-fold: TRUE
+
+summary_stats <- bf %>%
+  group_by(bfed) %>%
+  summarize(
+    n = n(),
+    Mean_energy = mean(energy),
+    SD_energy = sd(energy)
+  )
+summary_stats
+
+```
+
+The standard deviations satisfy the rule of thumb (none are more than twice the size of another), so we can reasonably assume variances are equal!
+
+```{r}
+#| code-fold: TRUE
+
+ggplot(bf, aes(x = bfed, y = energy)) +
+  geom_boxplot() +
+  labs(x = "Breastfeeding Group", y = "Energy Intake (kcal/day)")
+
+```
+
+A quick glance at some box plots tell us a similar story about the variances -- they look pretty equal except for a couple outliers.
+
+Let's do a visual check for normality, as well.
+
+```{r}
+#| code-fold: TRUE
+
+ggplot(bf, aes(sample = energy)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_grid(. ~ bfed) +
+  labs(title = "QQ Plots of Energy Intake by Breastfeeding Group",
+       x = "Theoretical Quantiles",
+       y = "Sample Quantiles")
+
+```
+
+The QQ plots look good except for those outliers again. We won't worry too much about those at this point.
+
+Once we're satisfied our assumptions are met, we'll use `aov()` to get the ANOVA F test results.
+
+```{r}
+#| code-fold: TRUE
+
+# Perform ANOVA
+anova_model <- aov(energy ~ bfed, data = bf)
+summary(anova_model)
+
+```
+
+The results from the ANOVA suggest energy levels are significantly different between the three breast feeding groups (at $\alpha = 0.05$), but the p-value is still relatively small. Let's take a look at the pairwise differences. 
+
+We can get good estimates of these differences by first getting the marginal means with the `emmeans()` function, then passing that info into the `pairs()` function. We'll start by estimating the pairwise differences without any correction.
+
+```{r}
+#| code-fold: TRUE
+
+# Compute estimated marginal means from the ANOVA
+emmeans_model <- emmeans(anova_model, "bfed")
+summary(emmeans_model)
+
+# Pairwise t-tests, no correction
+pairs(emmeans_model,
+      adjust = "none",
+      infer = c(TRUE, TRUE)) # This bit adds 95% CI bounds to output
+
+
+```
+
+The difference between BF groups 4 and 5 is significant at the 0.05 level.
+
+But as we learned in the lecture, it's a good idea when doing multiple tests at once to account for the higher probability of finding a statistically significant result simply due to chance. One way to do that is with a Bonferroni correction. We can apply that correction with the argument `adjust = "bonferroni"`.
+
+```{r}
+#| code-fold: TRUE
+
+# Pairwise t-tests; Bonferroni correction
+pairs(emmeans_model,
+      adjust = "bonferroni",
+      infer = c(TRUE, TRUE))
+
+```
+
+After the adjustment, our differences are no longer significant at the 0.05 level.
+
+### Non-parametric example
+
+Say we *are* concerned about the normality assumption needed for the ANOVA due to the outliers we saw. We can use the non-parametric Kruskal-Wallis test instead with `kruskal.test()`.
+
+```{r}
+#| code-fold: TRUE
+
+kruskal.test(energy ~ bfed, data = bf)
+
+```
+
+Based on the results, we can see that at least one pair of breast feeding groups have significantly different mean energy intakes (at $\alpha = 0.05$), but we don't know which. So we'll follow up our test with pairwise comparisons again.
+
+The approach we'll use is the same as the one implemented in SAS: the Dwass, Steel, Critchlow-Fligner (DSCF) method. We can use the `dscfAllPairsTest()` function from the `PMCMRplus` library.
+
+```{r}
+#| code-fold: TRUE
+
+# Setting bfed to a factor, otherwise the document won't render ¯\_(ツ)_/¯
+bf$bfed <- as.factor(bf$bfed)
+
+DSCF = dscfAllPairsTest(energy ~ bfed, data = bf)
+summary(DSCF)
+
+```
+
+The difference between BF groups 4 and 5 is significant at the 0.05 level. There is not a signifanct difference between the other pairs.
+
+## Correlation
+
+-   Population correlation ($\rho$)
+    -   $-1 \leq \rho \leq 1$
+    -   $\rho = 0$ implies no linear relationship (variables are uncorrelated but a nonlinear relationship may exist)
+    -   $\rho > 0$ suggests a positive relationship (positive correlation)
+    -   $\rho < 0$ suggests a negative relationship (negative correlation)
+-   Pearson correlation coefficient ($r$)
+    -   Estimates correlation of the population ($\rho$)
+    -   Can test $\text{H}_0: \rho = 0$
+    -   Test assumes X and Y are normally distributed
+    -   Pearson correlation coefficient is sensitive to outliers
+-   Spearman correlation coefficient ($r_s$)
+    -   Estimates correlation of the population ($\rho$)
+    -   Can test $\text{H}_0: \rho = 0$
+    -   Use when X and/or Y are ordinal or non-normal
+    -   Nonparametric analogue of $r$
+
+We're going to use our favorite "lowbwt.xlsx" example again. The data set has the following variables:
+
+-   sbp = systolic blood pressure
+-   sex = sex (1=male; 0=female)
+-   tox = toxemia diagnosis for mother (1=yes; 0=no)
+-   grmhem = germinal matrix hemorrhage (1=yes; 0=no)
+-   gestage = gestational age
+-   apgar5 = apgar score at 5 minutes
+
+```{r}
+#| code-fold: TRUE
+
+lowbwt <- read_xlsx("lowbwt.xlsx")
+head(lowbwt)
+
+```
+
+Suppose we want to look at the relationship between systolic blood pressure (sbp) and gestational age. Start with a scatter plot!
+
+```{r}
+#| code-fold: TRUE
+#| 
+
+ggplot(lowbwt, aes(x = gestage, y = sbp)) +
+  geom_point() +
+  labs(x = "Gestational Age (weeks)", 
+       y = "Systolic Blood Pressure (mm Hg)")
+
+
+```
+
+Looks like there is a slight positive linear relationship between the variables. We can get Pearson and Spearman estimates of the correlation coefficient with the `cor()` function.
+
+```{r}
+#| code-fold: TRUE
+
+pearson_r <- cor(lowbwt$gestage, lowbwt$sbp, method = "pearson")
+paste0("Pearson correlation coef: ", round(pearson_r,4))
+
+```
+
+```{r}
+#| code-fold: TRUE
+
+spearman_r <- cor(lowbwt$gestage, lowbwt$sbp, method = "spearman")
+paste0("Spearman correlation coef: ", round(spearman_r,4))
+
+```
+
+If we'd also like to get CI's for the estimates and/or test whether the correlation is significantly different from 0, we can use the `cor.test()` function.
+
+```{r}
+#| code-fold: TRUE
+
+# Pearson correlation with 95% confidence interval
+cor.test(lowbwt$sbp, 
+         lowbwt$gestage, 
+         method = "pearson", 
+         conf.level = 0.95)
+
+```
+
+```{r}
+#| code-fold: TRUE
+
+# Spearman correlation with 95% confidence interval
+cor.test(lowbwt$sbp, 
+         lowbwt$gestage, 
+         method = "spearman", 
+         conf.level = 0.95)
+
+```
+
+## Regression
+
+The population model for simple linear regression is:
+
+$\text{Y} = \alpha + \beta \text{X} + e$
+
+Where $e$ is a normally distributed error term, $\text{N}(0, \sigma^2)$.
+
+-   $\alpha$ is the intercept of the line\
+-   $\beta$ is the slope
+
+A multiple regression model with k predictors has the following form:
+
+$\text{Y} = \alpha + \beta_1 \text{X}_1 + \beta_2 \text{X}_2 + ... + \beta_k \text{X}_k + e$
+
+Where $e$ is a normally distributed error term, $\text{N}(0, \sigma^2)$.
+
+-   $\beta_j$ represents the average increase in $\text{Y}$ per unit increase in $\text{X}_j$, with all other variables held constant (or stated another way, after adjusting for all other variables in the model)
+
+Assumptions:
+
+1.  Linearity: $\text{E(Y)}$ is linear in $\text{X}_1, \text{X}_2, \dots, \text{X}_k$
+2.  Homoscedasticity: The variance $\sigma^2$ (which is the variance of $\text{Y}$ given all of the $\text{X}_j\text{s}$) is constant.
+3.  Approximate normality: For fixed $\text{X}_1, \text{X}_2, \dots, \text{X}_k$, $\text{Y}$ is approximately normally distributed
+4.  Independence: The $\text{Ys}$ are independent
+
+### Simple linear regression example
+
+Continuing to look at the relationship between sbp and gestational age, fit a simple linear regression model with sbp as the outcome (Y) and gestational age as the predictor (X).
+
+Use `lm()` to fit the model. To specify the model formula we want to use, we provide and argument to the function that looks like this: `outcome ~ predictor(s)`.
+
+For out model, use `sbp` as the outcome and `gestage` as the predictor.
+
+```{r}
+#| code-fold: TRUE
+
+lm1 <- lm(sbp ~ gestage, data = lowbwt)
+summary(lm1)
+
+```
+
+The summary of the model gives us a lot of information at once. If we only want to look at the coefficients, we can specify that:
+
+```{r}
+lm1$coefficients
+```
+
+If we'd like to see confidence intervals for the coefficient estimates, we can use the `confint()` function on the model output.
+
+```{r}
+confint(lm1, level = 0.95)  # Default is 95% confidence level
+```
+
+We can also easily get a series of diagnostic plots for the model by passing our linear model object into the `plot()` function.
+
+```{r}
+#| code-fold: TRUE
+
+# Diagnostic plots for the model
+plot(lm1)
+```
+
+We might also want to see our regression line plotted on the original data.
+
+```{r}
+#| code-fold: TRUE
+#| 
+# Scatter plot with regression line and confidence interval
+ggplot(lowbwt, aes(x = gestage, y = sbp)) +
+  geom_point() +
+  geom_smooth(method = "lm") + # specify that we want to show the linear model fit
+  labs(x = "Gestational Age (weeks)", 
+       y = "Systolic Blood Pressure (mm Hg)")
+
+
+```
+
+By default, `ggplot` includes a confidence interval for the linear model. If you ever want to remove that bit, you can add the `se = FALSE` argument to `geom_smooth()`.
+
+```{r}
+#| code-fold: TRUE
+
+# Scatter plot with regression line and no confidence interval
+ggplot(lowbwt, aes(x = gestage, y = sbp)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "Gestational Age (weeks)", 
+       y = "Systolic Blood Pressure (mm Hg)")
+
+```
+
+### Multiple regression example
+
+Suppose now we want to see if gestational age is still associated with sbp after controlling for sex. The `lm()` function can be used for multiple regression as well. We can do this by adding `sex` to our linear model formula.
+
+```{r}
+#| code-fold: TRUE
+
+lm2 <- lm(sbp ~ gestage + sex, data = lowbwt)
+summary(lm2)
+confint(lm2)
+
+```
+
+We can add as many variables as we want to the model. If we also wanted to include Apgar score, our model would look like this:
+
+```{r}
+#| code-fold: TRUE
+
+lm3 <- lm(sbp ~ gestage + sex + apgar5, data = lowbwt)
+summary(lm3)
+confint(lm3)
+
+```
+
+And if we want to fit a model using all available variables, we don't need to write them all out. We can write the formula as `sbp ~ .`
+
+```{r}
+#| code-fold: TRUE
+
+lm4 <- lm(sbp ~ ., data = lowbwt)
+summary(lm4)
+
+```
+
+
+## Extra practice
+
+1. Suppose we are interested in gestational age and want to categorize it as: extremely preterm (less than 28 weeks), very preterm (28 to 32 weeks), and moderate to late preterm (32 to 37 weeks). Just like we did in lab 5, we can create a new variable:
+
+```{r}
+#| code-fold: TRUE
+
+# Create the gestational age category
+lowbwt <- lowbwt %>%
+  mutate(gestage_cat = as.factor(case_when(
+    gestage < 28 ~ 1,
+    gestage >= 28 & gestage < 32 ~ 2,
+    gestage >= 32 ~ 3
+  )))
+```
+
+Does sbp differ between the three gestational age groups?
+
+Verify that the assumptions for ANOVA are reasonable and then perform the ANOVA F test. If appropriate, perform pairwise t tests without adjustment. Summarize the findings.
+
+
+```{r}
+#| code-fold: TRUE
+
+# Summary stats
+summary_stats_sbp <- lowbwt %>%
+  group_by(gestage_cat) %>%
+  summarize(
+    n = n(),
+    Mean_sbp = mean(sbp),
+    SD_sbp = sd(sbp)
+  )
+summary_stats_sbp
+
+```
+
+The standard deviations satisfy the rule of thumb for equal variances
+
+```{r}
+#| code-fold: TRUE
+
+ggplot(lowbwt, aes(x = gestage_cat, y = sbp)) +
+  geom_boxplot() +
+  labs(x = "Gestational Age Group", y = "Systolic Blood Pressure (mm Hg)")
+
+```
+
+```{r}
+#| code-fold: TRUE
+
+ggplot(lowbwt, aes(sample = sbp)) +
+  stat_qq() +
+  stat_qq_line() +
+  facet_grid(. ~ gestage_cat) +
+  labs(title = "QQ Plots of Energy Intake by Gestational Age Group",
+       x = "Theoretical Quantiles",
+       y = "Sample Quantiles")
+
+```
+
+Plots regarding normality look good enough to proceed with the ANOVA.
+
+```{r}
+#| code-fold: TRUE
+
+# Perform ANOVA
+anova_model_sbp <- aov(sbp ~ gestage_cat, data = lowbwt)
+summary(anova_model_sbp)
+
+```
+
+The results from the ANOVA suggest SBP levels are significantly different between the three gestational age groups (at $\alpha = 0.05)
+
+
+```{r}
+#| code-fold: TRUE
+
+# Compute estimated marginal means from the ANOVA
+emmeans_model_sbp <- emmeans(anova_model_sbp, "gestage_cat")
+summary(emmeans_model_sbp)
+
+# Pairwise t-tests, no correction
+pairs(emmeans_model_sbp,
+      adjust = "none",
+      infer = c(TRUE, TRUE)) # This bit adds 95% CI bounds to output
+
+
+```
+
+At significance level 0.05, there is sufficient evidence to suggest a difference between the average SBP of infants in gestational age categories 1 and 2 (extremely preterm and very preterm, respectively).
+
+There is not sufficient evidence to suggest the means of groups 1 and 3 differ, nor sufficient evidence to suggest the means of groups 2 and 3 differ.
+
+2.	Suppose we are interested in whether there is a relationship between gestational age and toxemia. Use linear regression to answer this question. Perform an appropriate hypothesis test for $\beta$. As part of your conclusion, include an interpretation of the $\beta$ parameter.
+
+Fit a model with `gestage` as the outcome and `tox` as the predictor.
+
+```{r}
+#| code-fold: TRUE
+
+lm_tox <- lm(gestage ~ tox, data = lowbwt)
+summary(lm_tox)
+
+```
+
+When we want to test whether a relationship is significant based on a linear model, we check to see whether our $\beta$ value is significantly different from 0 using a t-test. R provides that info in the `lm()` summary. 
+
+Notice the p-value associated with `tox` is small -- $2.05 \times 10^{-5}$. This leads us to conclude the coefficient for toxemia status is significantly different from 0, or in other words, the relationship between toxemia and gestational age is significant.
+
+The coefficient estimate for toxemia is 2.5503. The interpretation of this value in this model is "The gestational age of infants whose mother's have toxemia is estimated to be 2.5503 weeks greater than infants whose mothers do not have toxemia". 
+
+
+
+
